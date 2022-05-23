@@ -9,3 +9,7 @@ description = "Look up taxonomic information given an NCBI accession number"
 clap = { version = "3.1", features = ["derive"] }
 flate2 = "1.0"
 tar = "0.4"
+# NOTE: do not upgrade sled beyond 0.34 without taking into account that this
+# will necessitate a migration
+sled = { version = "0.34", features = ["compression"] }
+xdg = "2.1"
