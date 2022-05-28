@@ -8,8 +8,10 @@ description = "Look up taxonomic information given an NCBI accession number"
 [dependencies]
 clap = { version = "3.1", features = ["derive"] }
 flate2 = "1.0"
+itertools = "0.10"
+num_enum = "0.5"
 tar = "0.4"
 # NOTE: do not upgrade sled beyond 0.34 without taking into account that this
 # will necessitate a migration
-sled = { version = "0.34", features = ["compression"] }
+sled = "0.34"
 xdg = "2.1"
