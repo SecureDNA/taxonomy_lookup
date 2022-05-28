@@ -9,7 +9,7 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 use tar::Archive;
 
 /// Geez NCBI, make up your mind.
-#[derive(Copy, Clone, IntoPrimitive, TryFromPrimitive)]
+#[derive(Copy, Clone, Debug, IntoPrimitive, TryFromPrimitive)]
 #[repr(u8)]
 pub enum Rank {
     NoRank,
@@ -281,8 +281,7 @@ impl TaxonomyDatabaseConfig {
 
         let db_config = sled::Config::default()
             .path(&db_path)
-            .mode(sled::Mode::LowSpace)
-            .create_new(true);
+            .mode(sled::Mode::LowSpace);
 
         Ok(match &self.source {
             TaxonomyDatabaseSource::FromFiles(ref path) => {
@@ -316,16 +315,16 @@ impl TaxonomyDatabaseConfig {
                     }
                 });
 
-                let accessions = db.open_tree("accession_map")?;
+                let accessions = db.open_tree("accession_to_taxon")?;
 
                 read_accessions_to_db(read_accessions(fs_iter)?, &accessions)?;
-                let name_map_db = db.open_tree("name_map")?;
+                let name_map_db = db.open_tree("taxon_to_name")?;
                 for (k, v) in names.iter() {
                     name_map_db.insert(k.to_le_bytes(), v.as_str())?;
                 }
 
-                let node_tree_db = db.open_tree("node_tree")?;
-                let node_ranks_db = db.open_tree("node_ranks")?;
+                let node_tree_db = db.open_tree("taxon_tree")?;
+                let node_ranks_db = db.open_tree("taxon_ranks")?;
                 for (k, (parent, rank)) in node_tree {
                     node_tree_db.insert(&k.to_le_bytes(), &parent.to_le_bytes())?;
                     node_ranks_db.insert(&k.to_le_bytes(), &[rank as u8])?;
@@ -333,19 +332,19 @@ impl TaxonomyDatabaseConfig {
 
                 db.flush()?;
                 TaxonomyDatabase {
-                    accession_map: accessions,
-                    name_map: node_tree_db,
-                    node_map: node_ranks_db,
-                    node_ranks: name_map_db,
+                    accession_to_taxon: accessions,
+                    taxon_to_name: name_map_db,
+                    taxon_tree: node_tree_db,
+                    taxon_ranks: node_ranks_db,
                 }
             }
             TaxonomyDatabaseSource::FromExisting => {
                 let db = db_config.open()?;
                 TaxonomyDatabase {
-                    accession_map: db.open_tree("accession_map")?,
-                    name_map: db.open_tree("node_tree")?,
-                    node_map: db.open_tree("node_ranks")?,
-                    node_ranks: db.open_tree("name_map")?,
+                    accession_to_taxon: db.open_tree("accession_to_taxon")?,
+                    taxon_to_name: db.open_tree("taxon_to_name")?,
+                    taxon_tree: db.open_tree("taxon_tree")?,
+                    taxon_ranks: db.open_tree("taxon_ranks")?,
                 }
             }
         })
@@ -353,12 +352,13 @@ impl TaxonomyDatabaseConfig {
 }
 
 pub struct TaxonomyDatabase {
-    accession_map: sled::Tree,
-    name_map: sled::Tree,
-    node_map: sled::Tree,
-    node_ranks: sled::Tree,
+    accession_to_taxon: sled::Tree,
+    taxon_to_name: sled::Tree,
+    taxon_tree: sled::Tree,
+    taxon_ranks: sled::Tree,
 }
 
+#[derive(Debug)]
 pub struct TaxonomyInfo(Vec<(Rank, String)>);
 
 // TODO throughout here, there's a bunch of annoying repetitive error stuff. Probably
@@ -366,44 +366,45 @@ pub struct TaxonomyInfo(Vec<(Rank, String)>);
 impl TaxonomyDatabase {
     pub fn rank(&self, taxon: u32) -> std::io::Result<Rank> {
         let content = self
-            .node_ranks
+            .taxon_ranks
             .get(taxon.to_le_bytes())?
             .ok_or(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Corrupted taxonomy node information",
+                "Corrupted taxonomy rank information: Could not find node",
             ))?;
         let rank_bytes: [u8; 1] = (*content).try_into().map_err(|_| {
+            println!("{:?}", content);
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Corrupted taxonomy node information",
+                "Corrupted taxonomy rank information: Could not convert to bytes",
             )
         })?;
         Ok(rank_bytes[0].try_into().map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Corrupted taxonomy node information",
+                "Corrupted taxonomy rank information: Could not convert to enum",
             )
         })?)
     }
 
     pub fn name(&self, taxon: u32) -> std::io::Result<String> {
         let content = self
-            .node_ranks
+            .taxon_to_name
             .get(taxon.to_le_bytes())?
             .ok_or(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Corrupted taxonomy node information",
+                "Corrupted taxonomy name information: node not found",
             ))?;
         String::from_utf8((*content).try_into().map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Corrupted taxonomy node information",
+                "Corrupted taxonomy name information: could not convert to bytes",
             )
         })?)
         .map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Corrupted taxonomy node information",
+                "Corrupted taxonomy name information: invalid utf8",
             )
         })
     }
@@ -411,12 +412,12 @@ impl TaxonomyDatabase {
     pub fn query(&self, accession: &str) -> std::io::Result<TaxonomyInfo> {
         let bare_acc = accession.split(".").next().unwrap().as_bytes();
 
-        let taxon_vec = if let Some(node) = self.accession_map.get(&bare_acc)? {
+        let taxon_vec = if let Some(node) = self.accession_to_taxon.get(&bare_acc)? {
             node
         } else {
             match (
-                self.accession_map.get_lt(&bare_acc)?,
-                self.accession_map.get_gt(&bare_acc)?,
+                self.accession_to_taxon.get_lt(&bare_acc)?,
+                self.accession_to_taxon.get_gt(&bare_acc)?,
             ) {
                 (Some((_, lbs)), Some((_, rbs))) if lbs == rbs => lbs,
                 _ => {
@@ -431,26 +432,25 @@ impl TaxonomyDatabase {
         let taxon_bytes: [u8; 4] = (*taxon_vec).try_into().map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Corrupted taxonomy node information",
+                "Corrupted taxonomy node information: Could not get taxon bytes",
             )
         })?;
-        let taxon = u32::from_le_bytes(taxon_bytes.clone());
 
         let mut ancestor_taxons = vec![];
         let mut ancestor_id = taxon_bytes;
         while ancestor_id != 1u32.to_le_bytes() {
             ancestor_taxons.push(u32::from_le_bytes(ancestor_id));
-            if let Ok(Some(content)) = self.node_map.get(ancestor_id) {
+            if let Ok(Some(content)) = self.taxon_tree.get(ancestor_id) {
                 ancestor_id = (*content).try_into().map_err(|_| {
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        "Corrupted taxonomy node information",
+                        "Corrupted taxonomy node information: could not read ancestor id bytes",
                     )
                 })?
             } else {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "Corrupted taxonomy node information",
+                    "Corrupted taxonomy node information: could not find ancestor",
                 ));
             }
         }
