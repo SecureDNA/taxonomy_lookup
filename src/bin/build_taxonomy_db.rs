@@ -22,8 +22,8 @@ struct Args {
 
 fn main() -> std::io::Result<()> {
     let args = Args::parse();
-    let mut config =
-        TaxonomyDatabaseConfig::new().source(TaxonomyDatabaseSource::FromFiles(args.taxonomy_dir.clone()));
+    let mut config = TaxonomyDatabaseConfig::new()
+        .source(TaxonomyDatabaseSource::FromFiles(args.taxonomy_dir.clone()));
     config = if let Some(p) = args.output_filename {
         config.location(p)
     } else {
