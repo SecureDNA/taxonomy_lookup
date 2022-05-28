@@ -260,6 +260,58 @@ const TAXON_RANKS: &str = "taxon_ranks";
 const TAXONOMY_DB_VERSION_KEY: &[u8] = b"taxonomy_db_version";
 const TAXONOMY_DB_VERSION: &[u8] = b"1";
 
+fn build_new_db(db: sled::Db, source_path: &Path) -> io::Result<TaxonomyDatabase> {
+    let taxdump_file = File::open(source_path.join("taxdump.tar.gz"))?;
+    let taxdump_gz = GzDecoder::new(&taxdump_file);
+    let mut taxdump_archive = Archive::new(taxdump_gz);
+    let mut names: BTreeMap<u32, String> = BTreeMap::new();
+    let mut node_tree: BTreeMap<u32, (u32, Rank)> = BTreeMap::new();
+    for e in taxdump_archive.entries()? {
+        let entry = e?;
+        if entry.path()? == Path::new("names.dmp") {
+            names = read_names_file(entry)?;
+        } else if entry.path()? == Path::new("nodes.dmp") {
+            node_tree = read_nodes_file(entry)?;
+        }
+    }
+
+    let taxa_map_dir_path = source_path.join("accession2taxid");
+
+    let taxa_map_dir = std::fs::read_dir(taxa_map_dir_path)?;
+    let fs_iter = taxa_map_dir.filter_map(|f| {
+        let path = f.ok()?.path();
+        if path.to_str().unwrap().ends_with("accession2taxid.gz") {
+            Some(GzDecoder::new(File::open(path).ok()?))
+        } else {
+            None
+        }
+    });
+
+    let accessions = db.open_tree(ACCESSION_TO_TAXON)?;
+
+    read_accessions_to_db(read_accessions(fs_iter)?, &accessions)?;
+    let name_map_db = db.open_tree(TAXON_TO_NAME)?;
+    for (k, v) in names.iter() {
+        name_map_db.insert(k.to_le_bytes(), v.as_str())?;
+    }
+
+    let node_tree_db = db.open_tree(TAXON_TREE)?;
+    let node_ranks_db = db.open_tree(TAXON_RANKS)?;
+    for (k, (parent, rank)) in node_tree {
+        node_tree_db.insert(&k.to_le_bytes(), &parent.to_le_bytes())?;
+        node_ranks_db.insert(&k.to_le_bytes(), &[rank as u8])?;
+    }
+    db.insert(TAXONOMY_DB_VERSION_KEY, TAXONOMY_DB_VERSION)?;
+
+    db.flush()?;
+    Ok(TaxonomyDatabase {
+        accession_to_taxon: accessions,
+        taxon_to_name: name_map_db,
+        taxon_tree: node_tree_db,
+        taxon_ranks: node_ranks_db,
+    })
+}
+
 impl TaxonomyDatabaseConfig {
     pub fn new() -> Self {
         TaxonomyDatabaseConfig {
@@ -292,59 +344,9 @@ impl TaxonomyDatabaseConfig {
 
         Ok(match &self.source {
             TaxonomyDatabaseSource::FromFiles(ref path) => {
-                let taxdump_file = File::open(path.join("taxdump.tar.gz"))?;
-                let taxdump_gz = GzDecoder::new(&taxdump_file);
-                let mut taxdump_archive = Archive::new(taxdump_gz);
-                let mut names: BTreeMap<u32, String> = BTreeMap::new();
-                let mut node_tree: BTreeMap<u32, (u32, Rank)> = BTreeMap::new();
-                for e in taxdump_archive.entries()? {
-                    let entry = e?;
-                    if entry.path()? == Path::new("names.dmp") {
-                        names = read_names_file(entry)?;
-                    } else if entry.path()? == Path::new("nodes.dmp") {
-                        node_tree = read_nodes_file(entry)?;
-                    }
-                }
-
-                let taxa_map_dir_path = path.join("accession2taxid");
-
-                let _ = std::fs::remove_dir_all(&db_path);
-
                 let db = db_config.open()?;
-
-                let taxa_map_dir = std::fs::read_dir(taxa_map_dir_path)?;
-                let fs_iter = taxa_map_dir.filter_map(|f| {
-                    let path = f.ok()?.path();
-                    if path.to_str().unwrap().ends_with("accession2taxid.gz") {
-                        Some(GzDecoder::new(File::open(path).ok()?))
-                    } else {
-                        None
-                    }
-                });
-
-                let accessions = db.open_tree(ACCESSION_TO_TAXON)?;
-
-                read_accessions_to_db(read_accessions(fs_iter)?, &accessions)?;
-                let name_map_db = db.open_tree(TAXON_TO_NAME)?;
-                for (k, v) in names.iter() {
-                    name_map_db.insert(k.to_le_bytes(), v.as_str())?;
-                }
-
-                let node_tree_db = db.open_tree(TAXON_TREE)?;
-                let node_ranks_db = db.open_tree(TAXON_RANKS)?;
-                for (k, (parent, rank)) in node_tree {
-                    node_tree_db.insert(&k.to_le_bytes(), &parent.to_le_bytes())?;
-                    node_ranks_db.insert(&k.to_le_bytes(), &[rank as u8])?;
-                }
-                db.insert(TAXONOMY_DB_VERSION_KEY, TAXONOMY_DB_VERSION)?;
-
-                db.flush()?;
-                TaxonomyDatabase {
-                    accession_to_taxon: accessions,
-                    taxon_to_name: name_map_db,
-                    taxon_tree: node_tree_db,
-                    taxon_ranks: node_ranks_db,
-                }
+                let _ = std::fs::remove_dir_all(&db_path);
+                build_new_db(db, path)?
             }
             TaxonomyDatabaseSource::FromExisting => {
                 let db = db_config.open()?;
@@ -352,9 +354,9 @@ impl TaxonomyDatabaseConfig {
                     Ok(Some(v)) => {
                         if &(*v) != TAXONOMY_DB_VERSION {
                             return Err(std::io::Error::new(
-                                    std::io::ErrorKind::InvalidData,
-                                    "Taxonomy database has incompatible version",
-                                    ))
+                                std::io::ErrorKind::InvalidData,
+                                "Taxonomy database has incompatible version",
+                            ));
                         }
                     }
                     _ => {}
@@ -486,6 +488,5 @@ impl TaxonomyDatabase {
         })?;
 
         self.query_taxon(u32::from_le_bytes(taxon_bytes))
-
     }
 }
