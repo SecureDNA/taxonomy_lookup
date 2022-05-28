@@ -196,7 +196,7 @@ fn read_accessions<R: Read>(
         let mut lines = BufReader::new(f).lines();
         let first_line = lines.next().unwrap_or(Err(io::Error::new(
             InvalidData,
-            format!("Empty accessions2taxid file"),
+            "Empty accessions2taxid file",
         )))?;
         let headers = first_line.split('\t').collect::<Vec<&str>>();
         let accession_column =
@@ -205,14 +205,14 @@ fn read_accessions<R: Read>(
                 .position(|&s| s == "accession")
                 .ok_or(io::Error::new(
                     InvalidData,
-                    format!("accessions2taxid file missing accession column"),
+                    "accessions2taxid file missing accession column",
                 ))?;
         let taxid_column = headers
             .iter()
             .position(|&s| s == "taxid")
             .ok_or(io::Error::new(
                 InvalidData,
-                format!("accessions2taxid file missing taxid column"),
+                "accessions2taxid file missing taxid column",
             ))?;
         let pair_iter = lines.filter_map(move |l| {
             let line = l.ok()?;
@@ -252,6 +252,13 @@ fn read_accessions_to_db(
     }
     Ok(())
 }
+
+const ACCESSION_TO_TAXON: &str = "accession_to_taxon";
+const TAXON_TO_NAME: &str = "taxon_to_name";
+const TAXON_TREE: &str = "taxon_tree";
+const TAXON_RANKS: &str = "taxon_ranks";
+const TAXONOMY_DB_VERSION_KEY: &[u8] = b"taxonomy_db_version";
+const TAXONOMY_DB_VERSION: &[u8] = b"1";
 
 impl TaxonomyDatabaseConfig {
     pub fn new() -> Self {
@@ -308,28 +315,28 @@ impl TaxonomyDatabaseConfig {
                 let taxa_map_dir = std::fs::read_dir(taxa_map_dir_path)?;
                 let fs_iter = taxa_map_dir.filter_map(|f| {
                     let path = f.ok()?.path();
-                    if path.to_str().unwrap().ends_with("gz") {
+                    if path.to_str().unwrap().ends_with("accession2taxid.gz") {
                         Some(GzDecoder::new(File::open(path).ok()?))
                     } else {
                         None
                     }
                 });
 
-                let accessions = db.open_tree("accession_to_taxon")?;
+                let accessions = db.open_tree(ACCESSION_TO_TAXON)?;
 
                 read_accessions_to_db(read_accessions(fs_iter)?, &accessions)?;
-                let name_map_db = db.open_tree("taxon_to_name")?;
+                let name_map_db = db.open_tree(TAXON_TO_NAME)?;
                 for (k, v) in names.iter() {
                     name_map_db.insert(k.to_le_bytes(), v.as_str())?;
                 }
 
-                let node_tree_db = db.open_tree("taxon_tree")?;
-                let node_ranks_db = db.open_tree("taxon_ranks")?;
+                let node_tree_db = db.open_tree(TAXON_TREE)?;
+                let node_ranks_db = db.open_tree(TAXON_RANKS)?;
                 for (k, (parent, rank)) in node_tree {
                     node_tree_db.insert(&k.to_le_bytes(), &parent.to_le_bytes())?;
                     node_ranks_db.insert(&k.to_le_bytes(), &[rank as u8])?;
                 }
-                db.insert(b"taxonomy_db_version", b"1")?;
+                db.insert(TAXONOMY_DB_VERSION_KEY, TAXONOMY_DB_VERSION)?;
 
                 db.flush()?;
                 TaxonomyDatabase {
@@ -341,9 +348,9 @@ impl TaxonomyDatabaseConfig {
             }
             TaxonomyDatabaseSource::FromExisting => {
                 let db = db_config.open()?;
-                match db.get(b"taxonomy_db_version") {
+                match db.get(TAXONOMY_DB_VERSION_KEY) {
                     Ok(Some(v)) => {
-                        if &(*v) != b"1" {
+                        if &(*v) != TAXONOMY_DB_VERSION {
                             return Err(std::io::Error::new(
                                     std::io::ErrorKind::InvalidData,
                                     "Taxonomy database has incompatible version",
@@ -353,10 +360,10 @@ impl TaxonomyDatabaseConfig {
                     _ => {}
                 }
                 TaxonomyDatabase {
-                    accession_to_taxon: db.open_tree("accession_to_taxon")?,
-                    taxon_to_name: db.open_tree("taxon_to_name")?,
-                    taxon_tree: db.open_tree("taxon_tree")?,
-                    taxon_ranks: db.open_tree("taxon_ranks")?,
+                    accession_to_taxon: db.open_tree(ACCESSION_TO_TAXON)?,
+                    taxon_to_name: db.open_tree(TAXON_TO_NAME)?,
+                    taxon_tree: db.open_tree(TAXON_TREE)?,
+                    taxon_ranks: db.open_tree(TAXON_RANKS)?,
                 }
             }
         })
