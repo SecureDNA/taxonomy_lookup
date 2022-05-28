@@ -329,6 +329,7 @@ impl TaxonomyDatabaseConfig {
                     node_tree_db.insert(&k.to_le_bytes(), &parent.to_le_bytes())?;
                     node_ranks_db.insert(&k.to_le_bytes(), &[rank as u8])?;
                 }
+                db.insert(b"taxonomy_db_version", b"1")?;
 
                 db.flush()?;
                 TaxonomyDatabase {
@@ -340,6 +341,17 @@ impl TaxonomyDatabaseConfig {
             }
             TaxonomyDatabaseSource::FromExisting => {
                 let db = db_config.open()?;
+                match db.get(b"taxonomy_db_version") {
+                    Ok(Some(v)) => {
+                        if &(*v) != b"1" {
+                            return Err(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    "Taxonomy database has incompatible version",
+                                    ))
+                        }
+                    }
+                    _ => {}
+                }
                 TaxonomyDatabase {
                     accession_to_taxon: db.open_tree("accession_to_taxon")?,
                     taxon_to_name: db.open_tree("taxon_to_name")?,
@@ -362,7 +374,7 @@ pub struct TaxonomyDatabase {
 pub struct TaxonomyInfo(Vec<(Rank, String)>);
 
 // TODO throughout here, there's a bunch of annoying repetitive error stuff. Probably
-// I should just make this less bad.
+// I should just make this less bad somehow.
 impl TaxonomyDatabase {
     pub fn rank(&self, taxon: u32) -> std::io::Result<Rank> {
         let content = self
