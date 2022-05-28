@@ -409,33 +409,8 @@ impl TaxonomyDatabase {
         })
     }
 
-    pub fn query(&self, accession: &str) -> std::io::Result<TaxonomyInfo> {
-        let bare_acc = accession.split(".").next().unwrap().as_bytes();
-
-        let taxon_vec = if let Some(node) = self.accession_to_taxon.get(&bare_acc)? {
-            node
-        } else {
-            match (
-                self.accession_to_taxon.get_lt(&bare_acc)?,
-                self.accession_to_taxon.get_gt(&bare_acc)?,
-            ) {
-                (Some((_, lbs)), Some((_, rbs))) if lbs == rbs => lbs,
-                _ => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "Accession number not found in database",
-                    ))
-                }
-            }
-        };
-
-        let taxon_bytes: [u8; 4] = (*taxon_vec).try_into().map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Corrupted taxonomy node information: Could not get taxon bytes",
-            )
-        })?;
-
+    pub fn query_taxon(&self, taxon: u32) -> std::io::Result<TaxonomyInfo> {
+        let taxon_bytes = taxon.to_le_bytes();
         let mut ancestor_taxons = vec![];
         let mut ancestor_id = taxon_bytes;
         while ancestor_id != 1u32.to_le_bytes() {
@@ -462,5 +437,36 @@ impl TaxonomyDatabase {
         }
 
         Ok(TaxonomyInfo(result))
+    }
+
+    pub fn query_accession(&self, accession: &str) -> std::io::Result<TaxonomyInfo> {
+        let bare_acc = accession.split(".").next().unwrap().as_bytes();
+
+        let taxon_vec = if let Some(node) = self.accession_to_taxon.get(&bare_acc)? {
+            node
+        } else {
+            match (
+                self.accession_to_taxon.get_lt(&bare_acc)?,
+                self.accession_to_taxon.get_gt(&bare_acc)?,
+            ) {
+                (Some((_, lbs)), Some((_, rbs))) if lbs == rbs => lbs,
+                _ => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "Accession number not found in database",
+                    ))
+                }
+            }
+        };
+
+        let taxon_bytes: [u8; 4] = (*taxon_vec).try_into().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Corrupted taxonomy node information: Could not get taxon bytes",
+            )
+        })?;
+
+        self.query_taxon(u32::from_le_bytes(taxon_bytes))
+
     }
 }

@@ -27,7 +27,7 @@ fn main() -> Result<()> {
     let db = config.build()?;
 
     for an in args.accession_numbers {
-        let info = db.query(&an)?;
+        let info = db.query_accession(&an)?;
         println!("{:?}", info);
     }
     Ok(())
