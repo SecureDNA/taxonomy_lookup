@@ -123,6 +123,10 @@ impl FromStr for Rank {
     }
 }
 
+fn data_error(msg: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, msg)
+}
+
 pub enum TaxonomyDatabaseSource {
     FromExisting,
     // FromGzipped(std::path::PathBuf),
@@ -137,49 +141,43 @@ pub struct TaxonomyDatabaseConfig {
 }
 
 fn read_names_file<R: Read>(f: R) -> io::Result<BTreeMap<u32, String>> {
-    use io::ErrorKind::InvalidData;
-
     let mut result = BTreeMap::new();
     for l in BufReader::new(f).lines() {
         let line = l?;
         let fields = line.split('\t').collect::<Vec<&str>>();
         if fields.len() != 8 {
-            return Err(io::Error::new(InvalidData, "Invalid line in names.dmp"));
+            return Err(data_error("Invalid line in names.dmp"));
         }
         if fields[6] != "scientific name" {
             continue;
         }
         let taxon = fields[0]
             .parse::<u32>()
-            .map_err(|_| io::Error::new(InvalidData, "Invalid taxon ID in names.dmp"))?;
+            .map_err(|_| data_error("Invalid taxon ID in names.dmp"))?;
         result.insert(taxon, String::from(fields[2]));
     }
     Ok(result)
 }
 
 fn read_nodes_file<R: Read>(f: R) -> io::Result<BTreeMap<u32, (u32, Rank)>> {
-    use io::ErrorKind::InvalidData;
-
     let mut result = BTreeMap::new();
     for l in BufReader::new(f).lines() {
         let line = l?;
         let field_iter = line.split('\t');
         let fields = field_iter.collect::<Vec<&str>>();
         if fields.len() != 26 {
-            return Err(io::Error::new(InvalidData, "Invalid line in nodes.dmp"));
+            return Err(data_error("Invalid line in nodes.dmp"));
         }
         let taxon = fields[0]
             .parse::<u32>()
-            .map_err(|_| io::Error::new(InvalidData, "Invalid taxon ID in nodes.dmp"))?;
+            .map_err(|_| data_error("Invalid taxon ID in nodes.dmp"))?;
         let parent = fields[2]
             .parse::<u32>()
-            .map_err(|_| io::Error::new(InvalidData, "Invalid taxon ID in nodes.dmp"))?;
+            .map_err(|_| data_error("Invalid taxon ID in nodes.dmp"))?;
         // ranks.insert(fields[4].to_owned());
         let rank = fields[4].parse::<Rank>().map_err(|_| {
-            io::Error::new(
-                InvalidData,
-                format!("Invalid rank in nodes.dmp: {:?}", fields[4]),
-            )
+            let msg = format!("Invalid rank in nodes.dmp: {:?}", fields[4]);
+            data_error(&msg)
         })?;
         result.insert(taxon, (parent, rank));
     }
@@ -189,27 +187,21 @@ fn read_nodes_file<R: Read>(f: R) -> io::Result<BTreeMap<u32, (u32, Rank)>> {
 fn read_accessions<R: Read>(
     fs: impl Iterator<Item = R>,
 ) -> io::Result<impl Iterator<Item = (String, u32)>> {
-    use io::ErrorKind::InvalidData;
-
     let mut pair_iters = vec![];
     for f in fs {
         let mut lines = BufReader::new(f).lines();
         let first_line = lines
             .next()
-            .unwrap_or_else(|| Err(io::Error::new(InvalidData, "Empty accessions2taxid file")))?;
+            .unwrap_or_else(|| Err(data_error("Empty accessions2taxid file")))?;
         let headers = first_line.split('\t').collect::<Vec<&str>>();
         let accession_column = headers
             .iter()
             .position(|&s| s == "accession")
-            .ok_or_else(|| {
-                io::Error::new(
-                    InvalidData,
-                    "accessions2taxid file missing accession column",
-                )
-            })?;
-        let taxid_column = headers.iter().position(|&s| s == "taxid").ok_or_else(|| {
-            io::Error::new(InvalidData, "accessions2taxid file missing taxid column")
-        })?;
+            .ok_or_else(|| data_error("accessions2taxid file missing accession column"))?;
+        let taxid_column = headers
+            .iter()
+            .position(|&s| s == "taxid")
+            .ok_or_else(|| data_error("accessions2taxid file missing taxid column"))?;
         let pair_iter = lines.filter_map(move |l| {
             let line = l.ok()?;
             let field_iter = line.split('\t');
@@ -348,10 +340,7 @@ impl TaxonomyDatabaseConfig {
                 let db = db_config.open()?;
                 if let Ok(Some(v)) = db.get(TAXONOMY_DB_VERSION_KEY) {
                     if &(*v) != TAXONOMY_DB_VERSION {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "Taxonomy database has incompatible version",
-                        ));
+                        return Err(data_error("Taxonomy database has incompatible version"));
                     }
                 }
                 TaxonomyDatabase {
@@ -386,23 +375,13 @@ pub struct TaxonomyInfo(Vec<(Rank, String)>);
 impl TaxonomyDatabase {
     pub fn rank(&self, taxon: u32) -> std::io::Result<Rank> {
         let content = self.taxon_ranks.get(taxon.to_le_bytes())?.ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Corrupted taxonomy rank information: Could not find node",
-            )
+            data_error("Corrupted taxonomy rank information: Could not find node")
         })?;
         let rank_bytes: [u8; 1] = (*content).try_into().map_err(|_| {
-            println!("{:?}", content);
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Corrupted taxonomy rank information: Could not convert to bytes",
-            )
+            data_error("Corrupted taxonomy rank information: Could not convert to bytes")
         })?;
         rank_bytes[0].try_into().map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Corrupted taxonomy rank information: Could not convert to enum",
-            )
+            data_error("Corrupted taxonomy rank information: Could not convert to enum")
         })
     }
 
@@ -410,24 +389,11 @@ impl TaxonomyDatabase {
         let content = self
             .taxon_to_name
             .get(taxon.to_le_bytes())?
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Corrupted taxonomy name information: node not found",
-                )
-            })?;
+            .ok_or_else(|| data_error("Corrupted taxonomy name information: node not found"))?;
         String::from_utf8((*content).try_into().map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Corrupted taxonomy name information: could not convert to bytes",
-            )
+            data_error("Corrupted taxonomy name information: could not convert to bytes")
         })?)
-        .map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Corrupted taxonomy name information: invalid utf8",
-            )
-        })
+        .map_err(|_| data_error("Corrupted taxonomy name information: invalid utf8"))
     }
 
     pub fn query_taxon(&self, taxon: u32) -> std::io::Result<TaxonomyInfo> {
@@ -438,14 +404,12 @@ impl TaxonomyDatabase {
             ancestor_taxons.push(u32::from_le_bytes(ancestor_id));
             if let Ok(Some(content)) = self.taxon_tree.get(ancestor_id) {
                 ancestor_id = (*content).try_into().map_err(|_| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
+                    data_error(
                         "Corrupted taxonomy node information: could not read ancestor id bytes",
                     )
                 })?
             } else {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
+                return Err(data_error(
                     "Corrupted taxonomy node information: could not find ancestor",
                 ));
             }
@@ -481,10 +445,7 @@ impl TaxonomyDatabase {
         };
 
         let taxon_bytes: [u8; 4] = (*taxon_vec).try_into().map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Corrupted taxonomy node information: Could not get taxon bytes",
-            )
+            data_error("Corrupted taxonomy node information: Could not get taxon bytes")
         })?;
 
         self.query_taxon(u32::from_le_bytes(taxon_bytes))
