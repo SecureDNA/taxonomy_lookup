@@ -392,7 +392,7 @@ pub struct TaxonomyDatabase {
 }
 
 #[derive(Debug)]
-pub struct TaxonomyInfo(Vec<(Rank, String)>);
+pub struct TaxonomyInfo(pub Vec<(Rank, String)>);
 
 // TODO throughout here, there's a bunch of annoying repetitive error stuff. Probably
 // I should just make this less bad somehow.
