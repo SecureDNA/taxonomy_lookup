@@ -194,26 +194,22 @@ fn read_accessions<R: Read>(
     let mut pair_iters = vec![];
     for f in fs {
         let mut lines = BufReader::new(f).lines();
-        let first_line = lines.next().unwrap_or(Err(io::Error::new(
-            InvalidData,
-            "Empty accessions2taxid file",
-        )))?;
+        let first_line = lines
+            .next()
+            .unwrap_or_else(|| Err(io::Error::new(InvalidData, "Empty accessions2taxid file")))?;
         let headers = first_line.split('\t').collect::<Vec<&str>>();
-        let accession_column =
-            headers
-                .iter()
-                .position(|&s| s == "accession")
-                .ok_or(io::Error::new(
+        let accession_column = headers
+            .iter()
+            .position(|&s| s == "accession")
+            .ok_or_else(|| {
+                io::Error::new(
                     InvalidData,
                     "accessions2taxid file missing accession column",
-                ))?;
-        let taxid_column = headers
-            .iter()
-            .position(|&s| s == "taxid")
-            .ok_or(io::Error::new(
-                InvalidData,
-                "accessions2taxid file missing taxid column",
-            ))?;
+                )
+            })?;
+        let taxid_column = headers.iter().position(|&s| s == "taxid").ok_or_else(|| {
+            io::Error::new(InvalidData, "accessions2taxid file missing taxid column")
+        })?;
         let pair_iter = lines.filter_map(move |l| {
             let line = l.ok()?;
             let field_iter = line.split('\t');
@@ -350,16 +346,13 @@ impl TaxonomyDatabaseConfig {
             }
             TaxonomyDatabaseSource::FromExisting => {
                 let db = db_config.open()?;
-                match db.get(TAXONOMY_DB_VERSION_KEY) {
-                    Ok(Some(v)) => {
-                        if &(*v) != TAXONOMY_DB_VERSION {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                "Taxonomy database has incompatible version",
-                            ));
-                        }
+                if let Ok(Some(v)) = db.get(TAXONOMY_DB_VERSION_KEY) {
+                    if &(*v) != TAXONOMY_DB_VERSION {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Taxonomy database has incompatible version",
+                        ));
                     }
-                    _ => {}
                 }
                 TaxonomyDatabase {
                     accession_to_taxon: db.open_tree(ACCESSION_TO_TAXON)?,
@@ -369,6 +362,12 @@ impl TaxonomyDatabaseConfig {
                 }
             }
         })
+    }
+}
+
+impl Default for TaxonomyDatabaseConfig {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -386,13 +385,12 @@ pub struct TaxonomyInfo(Vec<(Rank, String)>);
 // I should just make this less bad somehow.
 impl TaxonomyDatabase {
     pub fn rank(&self, taxon: u32) -> std::io::Result<Rank> {
-        let content = self
-            .taxon_ranks
-            .get(taxon.to_le_bytes())?
-            .ok_or(std::io::Error::new(
+        let content = self.taxon_ranks.get(taxon.to_le_bytes())?.ok_or_else(|| {
+            std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Corrupted taxonomy rank information: Could not find node",
-            ))?;
+            )
+        })?;
         let rank_bytes: [u8; 1] = (*content).try_into().map_err(|_| {
             println!("{:?}", content);
             std::io::Error::new(
@@ -400,22 +398,24 @@ impl TaxonomyDatabase {
                 "Corrupted taxonomy rank information: Could not convert to bytes",
             )
         })?;
-        Ok(rank_bytes[0].try_into().map_err(|_| {
+        rank_bytes[0].try_into().map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Corrupted taxonomy rank information: Could not convert to enum",
             )
-        })?)
+        })
     }
 
     pub fn name(&self, taxon: u32) -> std::io::Result<String> {
         let content = self
             .taxon_to_name
             .get(taxon.to_le_bytes())?
-            .ok_or(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Corrupted taxonomy name information: node not found",
-            ))?;
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Corrupted taxonomy name information: node not found",
+                )
+            })?;
         String::from_utf8((*content).try_into().map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -461,7 +461,7 @@ impl TaxonomyDatabase {
     }
 
     pub fn query_accession(&self, accession: &str) -> std::io::Result<TaxonomyInfo> {
-        let bare_acc = accession.split(".").next().unwrap().as_bytes();
+        let bare_acc = accession.split('.').next().unwrap().as_bytes();
 
         let taxon_vec = if let Some(node) = self.accession_to_taxon.get(&bare_acc)? {
             node
