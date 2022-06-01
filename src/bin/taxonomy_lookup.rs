@@ -19,7 +19,7 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let mut config = TaxonomyDatabaseConfig::new();
+    let mut config = TaxonomyDatabaseConfig::new().cache_size(10_000_000_000);
     if let Some(tax_dir) = args.taxonomy_dir {
         config = config.location(tax_dir);
     }

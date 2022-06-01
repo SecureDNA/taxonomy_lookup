@@ -129,7 +129,7 @@ fn data_error(msg: &str) -> io::Error {
 
 pub enum TaxonomyDatabaseSource {
     FromExisting,
-    // FromGzipped(std::path::PathBuf),
+    FromGzipped(std::path::PathBuf),
     // FromGzippedUrl(url::Url),
     FromFiles(std::path::PathBuf),
     // FromFilesUrl(url::Url)
@@ -137,6 +137,7 @@ pub enum TaxonomyDatabaseSource {
 
 pub struct TaxonomyDatabaseConfig {
     source: TaxonomyDatabaseSource,
+    cache_size: Option<u64>,
     location: Option<std::path::PathBuf>,
 }
 
@@ -300,12 +301,40 @@ fn build_new_db(db: sled::Db, source_path: &Path) -> io::Result<TaxonomyDatabase
     })
 }
 
+pub fn unzip_db<Ps: AsRef<Path>, Pt: AsRef<Path>>(source: Ps, target: Pt) -> io::Result<()> {
+    let source_file = File::open(source)?;
+    let source_gz = GzDecoder::new(&source_file);
+    let mut archive = Archive::new(source_gz);
+    archive.unpack(target)
+}
+
+fn open_existing(db_config: sled::Config) -> io::Result<TaxonomyDatabase> {
+    let db = db_config.open()?;
+    if let Ok(Some(v)) = db.get(TAXONOMY_DB_VERSION_KEY) {
+        if &(*v) != TAXONOMY_DB_VERSION {
+            return Err(data_error("Taxonomy database has incompatible version"));
+        }
+    }
+    Ok(TaxonomyDatabase {
+        accession_to_taxon: db.open_tree(ACCESSION_TO_TAXON)?,
+        taxon_to_name: db.open_tree(TAXON_TO_NAME)?,
+        taxon_tree: db.open_tree(TAXON_TREE)?,
+        taxon_ranks: db.open_tree(TAXON_RANKS)?,
+    })
+}
+
 impl TaxonomyDatabaseConfig {
     pub fn new() -> Self {
         TaxonomyDatabaseConfig {
             source: TaxonomyDatabaseSource::FromExisting,
+            cache_size: None,
             location: None,
         }
+    }
+
+    pub fn cache_size(mut self, size: u64) -> Self {
+        self.cache_size = Some(size);
+        self
     }
 
     pub fn location(mut self, location: std::path::PathBuf) -> Self {
@@ -326,9 +355,13 @@ impl TaxonomyDatabaseConfig {
                 .place_data_file("taxonomy.sled")?
         };
 
-        let db_config = sled::Config::default()
+        let mut db_config = sled::Config::default()
             .path(&db_path)
             .mode(sled::Mode::LowSpace);
+
+        if let Some(cache_size) = self.cache_size {
+            db_config = db_config.cache_capacity(cache_size);
+        }
 
         Ok(match &self.source {
             TaxonomyDatabaseSource::FromFiles(ref path) => {
@@ -336,19 +369,10 @@ impl TaxonomyDatabaseConfig {
                 let _ = std::fs::remove_dir_all(&db_path);
                 build_new_db(db, path)?
             }
-            TaxonomyDatabaseSource::FromExisting => {
-                let db = db_config.open()?;
-                if let Ok(Some(v)) = db.get(TAXONOMY_DB_VERSION_KEY) {
-                    if &(*v) != TAXONOMY_DB_VERSION {
-                        return Err(data_error("Taxonomy database has incompatible version"));
-                    }
-                }
-                TaxonomyDatabase {
-                    accession_to_taxon: db.open_tree(ACCESSION_TO_TAXON)?,
-                    taxon_to_name: db.open_tree(TAXON_TO_NAME)?,
-                    taxon_tree: db.open_tree(TAXON_TREE)?,
-                    taxon_ranks: db.open_tree(TAXON_RANKS)?,
-                }
+            TaxonomyDatabaseSource::FromExisting => open_existing(db_config)?,
+            TaxonomyDatabaseSource::FromGzipped(ref path) => {
+                unzip_db(path, &db_path)?;
+                open_existing(db_config)?
             }
         })
     }
