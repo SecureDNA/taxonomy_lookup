@@ -82,7 +82,7 @@ fn read_accessions<R: Read>(
         let headers = first_line.split('\t').collect::<Vec<&str>>();
         let accession_column = headers
             .iter()
-            .position(|&s| s == "accession")
+            .position(|&s| s == "accession" || s == "accession.version")
             .ok_or_else(|| data_error("accessions2taxid file missing accession column"))?;
         let taxid_column = headers
             .iter()
@@ -154,7 +154,11 @@ fn build_new_db(db: sled::Db, source_path: &Path) -> io::Result<TaxonomyDatabase
     let taxa_map_dir = std::fs::read_dir(taxa_map_dir_path)?;
     let fs_iter = taxa_map_dir.filter_map(|f| {
         let path = f.ok()?.path();
-        if path.to_str().unwrap().ends_with("accession2taxid.gz") {
+        let path_str = path.to_str().unwrap();
+        if path_str.ends_with("accession2taxid.gz")
+            || path_str.ends_with("accession2taxid.FULL.gz")
+            || path_str.ends_with("accession2taxid.EXTRA.gz")
+        {
             Some(GzDecoder::new(File::open(path).ok()?))
         } else {
             None
@@ -250,8 +254,8 @@ impl TaxonomyDatabaseConfig {
 
         Ok(match &self.source {
             TaxonomyDatabaseSource::FromFiles(ref path) => {
-                let db = db_config.open()?;
                 let _ = std::fs::remove_dir_all(&db_path);
+                let db = db_config.open()?;
                 build_new_db(db, path)?
             }
             TaxonomyDatabaseSource::FromExisting => open_existing(db_config)?,

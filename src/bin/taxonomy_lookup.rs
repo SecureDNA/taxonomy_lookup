@@ -1,3 +1,4 @@
+use std::io::prelude::*;
 use std::io::Result;
 use std::path::PathBuf;
 
@@ -9,10 +10,16 @@ use taxonomy_lookup::TaxonomyDatabaseConfig;
 #[clap(author, version, about)]
 struct Args {
     /// Where to find the database files. By default, this tool will look for them in
-    /// "$XDG_DATA_HOME/taxonomy_lookup/"
+    /// "$XDG_DATA_HOME/taxonomy_lookup/".
     #[clap(short, long)]
     taxonomy_dir: Option<PathBuf>,
 
+    /// Accept line-separated accession numbers form stdin as well as from the command
+    /// line.
+    #[clap(short, long)]
+    stdin: bool,
+
+    /// A list of accession numbers, e.g. U39076.1
     accession_numbers: Vec<String>,
 }
 
@@ -27,8 +34,22 @@ fn main() -> Result<()> {
     let db = config.build()?;
 
     for an in args.accession_numbers {
-        let info = db.query_accession(&an)?;
-        println!("{:?}", info);
+        if let Ok(info) = db.query_accession(&an) {
+            println!("{:?}", info);
+        } else {
+            eprintln!("Could not find {}", &an)
+        }
+    }
+
+    if args.stdin {
+        for an_maybe in std::io::stdin().lock().lines() {
+            let an = an_maybe?;
+            if let Ok(info) = db.query_accession(&an) {
+                println!("{:?}", info);
+            } else {
+                eprintln!("Could not find {}", &an)
+            }
+        }
     }
     Ok(())
 }
