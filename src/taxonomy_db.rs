@@ -93,8 +93,9 @@ fn read_accessions<R: Read>(
             let field_iter = line.split('\t');
             let fields = field_iter.map(|s| s.to_string()).collect::<Vec<String>>();
             let taxid = fields[taxid_column].parse::<u32>().ok()?;
-            let accession = fields[accession_column].clone();
-            Some((accession, taxid))
+            let accession = &fields[accession_column];
+            let bare_acc: String = accession.split('.').next().unwrap().to_string();
+            Some((bare_acc, taxid))
         });
         pair_iters.push(pair_iter)
     }
@@ -107,22 +108,50 @@ fn read_accessions_to_db(
     pairs: impl Iterator<Item = (String, u32)>,
     db: &sled::Tree,
 ) -> io::Result<()> {
-    let mut last_taxid_and_accession: Option<(u32, String)> = None;
+    let mut last_accession_and_taxid: Option<(String, u32)> = None;
+    let mut last_insertion: Option<(String, u32)> = None;
 
     for pair in pairs {
         let (accession, taxid) = pair;
 
-        match last_taxid_and_accession {
-            Some((last_taxid, last_acc)) if last_taxid != taxid => {
-                db.insert(last_acc, &last_taxid.to_le_bytes())?;
-                db.insert(&accession, &taxid.to_le_bytes())?;
+        // Under what conditions do we want to insert an accession:taxid mapping?
+        //
+        // First, we want to totally ignore any duplicated accessions. If we have already seen
+        // an accession, we ignore all subsequent ones.
+        //
+        // Having dealt with this possibility, we want to insert the "endstops" of every run of
+        // shared taxids. We do this by looking for transitions between different taxids, and
+        // inserting the mappings from both sides of the transition.
+
+        let insertions: Vec<(String, u32)> = match (&last_accession_and_taxid, &last_insertion) {
+            (None, _) => vec![(accession.clone(), taxid)],
+            (Some((last_acc, last_taxid)), Some((_, last_inserted_taxid))) => {
+                if last_acc == &accession {
+                    // If this accession is the same as the last one we saw, we want to skip it
+                    // entirely. Thus whenever we see multiple accessions, we always choose the
+                    // first taxid we see.
+                    continue
+                } else if taxid == *last_inserted_taxid {
+                    // Similarly, if we most recently inserted an item with a given taxid, we're in
+                    // a run. If this is the last element of the run we'll insert it on the next
+                    // iteration; if it isn't the last run element we want to skip it.
+                    vec![]
+                } else {
+                    // finally we know that we've achieved a proper transition between two runs.
+                    vec![(last_acc.clone(), *last_taxid), (accession.clone(), taxid)]
+                }
             }
-            None => {
-                db.insert(&accession, &taxid.to_le_bytes())?;
-            }
-            _ => {}
+            _ => vec![],
+        };
+
+        for (acc_insert, taxid_insert) in insertions {
+            db.insert(acc_insert.clone(), &taxid_insert.to_le_bytes())?;
+            last_insertion = Some((acc_insert.clone(), taxid_insert));
         }
-        last_taxid_and_accession = Some((taxid, accession.clone()));
+        last_accession_and_taxid = Some((accession, taxid));
+    }
+    if let Some((last_acc, last_taxid)) = last_accession_and_taxid {
+        db.insert(last_acc, &last_taxid.to_le_bytes())?;
     }
     Ok(())
 }
