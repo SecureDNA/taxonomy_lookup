@@ -130,7 +130,7 @@ fn read_accessions_to_db(
                     // If this accession is the same as the last one we saw, we want to skip it
                     // entirely. Thus whenever we see multiple accessions, we always choose the
                     // first taxid we see.
-                    continue
+                    continue;
                 } else if taxid == *last_inserted_taxid {
                     // Similarly, if we most recently inserted an item with a given taxid, we're in
                     // a run. If this is the last element of the run we'll insert it on the next
