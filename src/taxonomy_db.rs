@@ -4,6 +4,7 @@ use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
 
 use flate2::read::GzDecoder;
+use itertools::Itertools;
 use tar::Archive;
 
 use crate::rank::Rank;
@@ -108,50 +109,19 @@ fn read_accessions_to_db(
     pairs: impl Iterator<Item = (String, u32)>,
     db: &sled::Tree,
 ) -> io::Result<()> {
-    let mut last_accession_and_taxid: Option<(String, u32)> = None;
-    let mut last_insertion: Option<(String, u32)> = None;
-
-    for pair in pairs {
-        let (accession, taxid) = pair;
-
-        // Under what conditions do we want to insert an accession:taxid mapping?
-        //
-        // First, we want to totally ignore any duplicated accessions. If we have already seen
-        // an accession, we ignore all subsequent ones.
-        //
-        // Having dealt with this possibility, we want to insert the "endstops" of every run of
-        // shared taxids. We do this by looking for transitions between different taxids, and
-        // inserting the mappings from both sides of the transition.
-
-        let insertions: Vec<(String, u32)> = match (&last_accession_and_taxid, &last_insertion) {
-            (None, _) => vec![(accession.clone(), taxid)],
-            (Some((last_acc, last_taxid)), Some((_, last_inserted_taxid))) => {
-                if last_acc == &accession {
-                    // If this accession is the same as the last one we saw, we want to skip it
-                    // entirely. Thus whenever we see multiple accessions, we always choose the
-                    // first taxid we see.
-                    continue;
-                } else if taxid == *last_inserted_taxid {
-                    // Similarly, if we most recently inserted an item with a given taxid, we're in
-                    // a run. If this is the last element of the run we'll insert it on the next
-                    // iteration; if it isn't the last run element we want to skip it.
-                    vec![]
-                } else {
-                    // finally we know that we've achieved a proper transition between two runs.
-                    vec![(last_acc.clone(), *last_taxid), (accession.clone(), taxid)]
-                }
-            }
-            _ => vec![],
-        };
-
-        for (acc_insert, taxid_insert) in insertions {
-            db.insert(acc_insert.clone(), &taxid_insert.to_le_bytes())?;
-            last_insertion = Some((acc_insert.clone(), taxid_insert));
+    // First, we want to totally ignore any duplicated accessions. If we have already seen
+    // an accession, we ignore all subsequent ones.
+    for (_, mut pair_group) in &pairs.dedup_by(|p, q| p.0 == q.0).group_by(|p| p.1) {
+        // Having dealt with that possibility, we want to insert the "endstops" of every run of
+        // shared taxids.
+        let (an_start, taxid_start) = pair_group
+            .next()
+            .expect("group_by() should always produce at least one element per group");
+        let taxid_bytes = taxid_start.to_le_bytes();
+        db.insert(an_start.clone(), &taxid_bytes)?;
+        if let Some((an_end, _taxid_end)) = pair_group.last() {
+            db.insert(an_end.clone(), &taxid_bytes)?;
         }
-        last_accession_and_taxid = Some((accession, taxid));
-    }
-    if let Some((last_acc, last_taxid)) = last_accession_and_taxid {
-        db.insert(last_acc, &last_taxid.to_le_bytes())?;
     }
     Ok(())
 }
